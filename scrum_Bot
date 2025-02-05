@@ -1,0 +1,97 @@
+import logging
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+from apscheduler.schedulers.background import BackgroundScheduler
+
+TOKEN = "YOUR_BOT_TOKEN"
+GROUP_ID = -123456789  # Replace with your Telegram group ID
+
+# Stages of conversation
+QUESTION_1, QUESTION_2, QUESTION_3 = range(3)
+
+# Dictionary to store user responses
+user_responses = {}
+
+# Logger setup
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# Function to start the bot
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Hi! I'll collect your daily standup updates. Expect a message from me daily!")
+
+# Ask the first question
+def ask_question(update: Update, context: CallbackContext):
+    user_responses[update.message.chat_id] = {"name": update.message.from_user.first_name}
+    update.message.reply_text("1️⃣ What did you finish yesterday?")
+    return QUESTION_1
+
+# Collect the first response and ask the second question
+def get_question_1(update: Update, context: CallbackContext):
+    user_responses[update.message.chat_id]["yesterday"] = update.message.text
+    update.message.reply_text("2️⃣ What will you finish today?")
+    return QUESTION_2
+
+# Collect the second response and ask the third question
+def get_question_2(update: Update, context: CallbackContext):
+    user_responses[update.message.chat_id]["today"] = update.message.text
+    update.message.reply_text("3️⃣ Any blockers?")
+    return QUESTION_3
+
+# Collect the third response and finish
+def get_question_3(update: Update, context: CallbackContext):
+    user_responses[update.message.chat_id]["blockers"] = update.message.text
+    update.message.reply_text("✅ Thank you! Your response is recorded.")
+    return ConversationHandler.END
+
+# Function to send questions to all users in the group
+def collect_responses(context: CallbackContext):
+    bot = context.bot
+    group_members = bot.get_chat_administrators(GROUP_ID)  # Get all admins (or use a user list)
+    
+    for member in group_members:
+        if not member.user.is_bot:  # Ignore bots
+            bot.send_message(member.user.id, "Hey! It's time for your standup update. Let's go!")
+            ask_question(member.user.id, context)
+
+# Function to compile and send the final report
+def send_summary(context: CallbackContext):
+    message = "**📊 Daily Standup Summary:**\n\n"
+
+    for user_id, data in user_responses.items():
+        message += f"**{data['name']}**\n"
+        message += f"🔹 *Yesterday:* {data.get('yesterday', 'Not answered')}\n"
+        message += f"🔹 *Today:* {data.get('today', 'Not answered')}\n"
+        message += f"🔹 *Blockers:* {data.get('blockers', 'None')}\n\n"
+
+    context.bot.send_message(GROUP_ID, message, parse_mode="Markdown")
+
+# Main function to start the bot
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    # Conversation handler for standup questions
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("standup", ask_question)],
+        states={
+            QUESTION_1: [MessageHandler(Filters.text & ~Filters.command, get_question_1)],
+            QUESTION_2: [MessageHandler(Filters.text & ~Filters.command, get_question_2)],
+            QUESTION_3: [MessageHandler(Filters.text & ~Filters.command, get_question_3)],
+        },
+        fallbacks=[]
+    )
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(conv_handler)
+
+    # Schedule the bot to send questions & summary
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(lambda: collect_responses(updater.job_queue), "cron", hour=9)  # Ask at 9 AM
+    scheduler.add_job(lambda: send_summary(updater.job_queue), "cron", hour=18)  # Summarize at 6 PM
+    scheduler.start()
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
