@@ -1,97 +1,99 @@
 import logging
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackContext,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 
-TOKEN = "YOUR_BOT_TOKEN"
-GROUP_ID = -123456789  # Replace with your Telegram group ID
+TOKEN = "7505034345:AAEloodyEV8Nz6-332e_RWck8HPP78uAARY"  # Replace with your bot token
+GROUP_ID = "-1002423544865" 
 
-# Stages of conversation
-QUESTION_1, QUESTION_2, QUESTION_3 = range(3)
-
-# Dictionary to store user responses
+# Dictionary to store user responses and states
 user_responses = {}
 
 # Logger setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # Function to start the bot
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Hi! I'll collect your daily standup updates. Expect a message from me daily!")
+async def start(update: Update, context: CallbackContext):
+    await update.message.reply_text("Hi! I'll collect your daily standup updates. Expect a message from me daily!")
 
-# Ask the first question
-def ask_question(update: Update, context: CallbackContext):
-    user_responses[update.message.chat_id] = {"name": update.message.from_user.first_name}
-    update.message.reply_text("1️⃣ What did you finish yesterday?")
-    return QUESTION_1
+# Function to ask the first question
+async def ask_question_1(user_id: int, context: CallbackContext):
+    await context.bot.send_message(chat_id=user_id, text="1️⃣ What did you finish yesterday?")
+    user_responses[user_id] = {"name": "User", "state": "QUESTION_1"}
 
-# Collect the first response and ask the second question
-def get_question_1(update: Update, context: CallbackContext):
-    user_responses[update.message.chat_id]["yesterday"] = update.message.text
-    update.message.reply_text("2️⃣ What will you finish today?")
-    return QUESTION_2
+# Function to ask the second question
+async def ask_question_2(user_id: int, context: CallbackContext):
+    await context.bot.send_message(chat_id=user_id, text="2️⃣ What will you finish today?")
+    user_responses[user_id]["state"] = "QUESTION_2"
 
-# Collect the second response and ask the third question
-def get_question_2(update: Update, context: CallbackContext):
-    user_responses[update.message.chat_id]["today"] = update.message.text
-    update.message.reply_text("3️⃣ Any blockers?")
-    return QUESTION_3
+# Function to ask the third question
+async def ask_question_3(user_id: int, context: CallbackContext):
+    await context.bot.send_message(chat_id=user_id, text="3️⃣ Any blockers?")
+    user_responses[user_id]["state"] = "QUESTION_3"
 
-# Collect the third response and finish
-def get_question_3(update: Update, context: CallbackContext):
-    user_responses[update.message.chat_id]["blockers"] = update.message.text
-    update.message.reply_text("✅ Thank you! Your response is recorded.")
-    return ConversationHandler.END
+# Function to handle user responses
+async def handle_response(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    if user_id not in user_responses:
+        return
+
+    state = user_responses[user_id].get("state")
+    if state == "QUESTION_1":
+        user_responses[user_id]["yesterday"] = update.message.text
+        await ask_question_2(user_id, context)
+    elif state == "QUESTION_2":
+        user_responses[user_id]["today"] = update.message.text
+        await ask_question_3(user_id, context)
+    elif state == "QUESTION_3":
+        user_responses[user_id]["blockers"] = update.message.text
+        user_responses[user_id]["state"] = "COMPLETED"
+        await update.message.reply_text("✅ Thank you! Your response is recorded.")
 
 # Function to send questions to all users in the group
-def collect_responses(context: CallbackContext):
+async def collect_responses(context: CallbackContext):
     bot = context.bot
-    group_members = bot.get_chat_administrators(GROUP_ID)  # Get all admins (or use a user list)
-    
+    group_members = await bot.get_chat_administrators(GROUP_ID)  # Get all admins (or use a user list)
+
     for member in group_members:
         if not member.user.is_bot:  # Ignore bots
-            bot.send_message(member.user.id, "Hey! It's time for your standup update. Let's go!")
-            ask_question(member.user.id, context)
+            await ask_question_1(member.user.id, context)
 
 # Function to compile and send the final report
-def send_summary(context: CallbackContext):
+async def send_summary(context: CallbackContext):
     message = "**📊 Daily Standup Summary:**\n\n"
 
     for user_id, data in user_responses.items():
-        message += f"**{data['name']}**\n"
-        message += f"🔹 *Yesterday:* {data.get('yesterday', 'Not answered')}\n"
-        message += f"🔹 *Today:* {data.get('today', 'Not answered')}\n"
-        message += f"🔹 *Blockers:* {data.get('blockers', 'None')}\n\n"
+        if data.get("state") == "COMPLETED":
+            message += f"**{data.get('name', 'User')}**\n"
+            message += f"🔹 *Yesterday:* {data.get('yesterday', 'Not answered')}\n"
+            message += f"🔹 *Today:* {data.get('today', 'Not answered')}\n"
+            message += f"🔹 *Blockers:* {data.get('blockers', 'None')}\n\n"
 
-    context.bot.send_message(GROUP_ID, message, parse_mode="Markdown")
+    await context.bot.send_message(GROUP_ID, message, parse_mode="Markdown")
 
 # Main function to start the bot
 def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    # Create the Application
+    application = Application.builder().token(TOKEN).build()
 
-    # Conversation handler for standup questions
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("standup", ask_question)],
-        states={
-            QUESTION_1: [MessageHandler(Filters.text & ~Filters.command, get_question_1)],
-            QUESTION_2: [MessageHandler(Filters.text & ~Filters.command, get_question_2)],
-            QUESTION_3: [MessageHandler(Filters.text & ~Filters.command, get_question_3)],
-        },
-        fallbacks=[]
-    )
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(conv_handler)
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_response))
 
     # Schedule the bot to send questions & summary
     scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: collect_responses(updater.job_queue), "cron", hour=9)  # Ask at 9 AM
-    scheduler.add_job(lambda: send_summary(updater.job_queue), "cron", hour=18)  # Summarize at 6 PM
+    scheduler.add_job(lambda: application.job_queue.run_once(collect_responses, when=0), "cron", hour=18, minute=44)  # Ask at 4:30 PM
+    scheduler.add_job(lambda: application.job_queue.run_once(send_summary, when=0), "cron", hour=18, minute=46)  # Summarize at 4:45 PM
     scheduler.start()
 
-    updater.start_polling()
-    updater.idle()
+    # Start the bot
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
